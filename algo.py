@@ -81,6 +81,7 @@ class MDLM(trainer_base.AbsorbingState):
 
   def _validate_configuration(self):
     """sampling.predictor=ancestral_cache 임을 검증"""
+    super()._validate_configuration()
     assert self.sampler != 'ancestral', \
       'sampling.predictor=ancestral is not desirable because ' \
       'it is slow. Please set sampling.predictor=ancestral_cache'
@@ -91,8 +92,7 @@ class MDLM(trainer_base.AbsorbingState):
     
     # Normalize the model_output such that x.exp() is
     # a probability distribution over vocab_size.
-    model_output = model_output - torch.logsumexp(
-      model_output, dim=-1, keepdim=True)
+    model_output = model_output - torch.logsumexp(model_output, dim=-1, keepdim=True)
     # Apply updates directly in the logits matrix.
     # For the logits of the unmasked tokens, set all values
     # to -infinity except for the indices corresponding to
@@ -102,8 +102,7 @@ class MDLM(trainer_base.AbsorbingState):
     model_output[unmasked_indices, xt[unmasked_indices]] = 0
     return model_output
 
-  def nll_per_token(self, log_x_theta, xt, x0, alpha_t,
-                    dalpha_t, low_var=False):
+  def nll_per_token(self, log_x_theta, xt, x0, alpha_t, dalpha_t, low_var=False):
     del xt
     log_p_theta = torch.gather(
       input=log_x_theta,

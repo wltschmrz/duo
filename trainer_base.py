@@ -141,8 +141,7 @@ class TrainerBase(L.LightningModule):
     self.fast_forward_batches = None
 
   def _validate_configuration(self):
-    assert self.config.algo.backbone in {'dit', 'hf_dit', 
-                                         'unet'}
+    assert self.config.algo.backbone in {'dit', 'hf_dit', 'unet'}
     if self.config.algo.parameterization == 'ar':
       assert not self.config.algo.time_conditioning
       assert self.config.prior.type == 'none'
@@ -277,18 +276,14 @@ class TrainerBase(L.LightningModule):
   def _process_model_output(self, model_output, xt, sigma):
     raise NotImplementedError
 
-  def forward(self, xt, sigma, labels=None, weights=None,
-              nn_input_idxs=None):
+  def forward(self, xt, sigma, labels=None, weights=None, nn_input_idxs=None):
     if nn_input_idxs is None:
       nn_input_idxs = xt
 
     sigma = self._process_sigma(sigma)
     with torch.amp.autocast('cuda', dtype=torch.float32):
-      model_output = self.backbone(
-        x=nn_input_idxs, sigma=sigma, class_cond=labels, 
-        weights=weights)
-    return self._process_model_output(
-      model_output=model_output, xt=xt, sigma=sigma)
+      model_output = self.backbone(x=nn_input_idxs, sigma=sigma, class_cond=labels, weights=weights)
+    return self._process_model_output(model_output=model_output, xt=xt, sigma=sigma)
 
   def on_train_epoch_start(self):
     self.metrics.reset()
@@ -508,11 +503,9 @@ class Diffusion(TrainerBase):
     # Handle class-conditional training, with class dropout
     if self.class_conditional:
       assert labels is not None
-      rand = torch.rand(size=labels.shape, dtype=torch.float32, 
-                      device=self.device)
+      rand = torch.rand(size=labels.shape, dtype=torch.float32, device=self.device)
       # num_classes represent the absence of class-conditioning
-      labels = torch.where(rand < self.class_cond_dropout, 
-                           self.num_classes, labels)
+      labels = torch.where(rand < self.class_cond_dropout, self.num_classes, labels)
     else:
       assert labels is None
     log_x_theta = self.forward(xt, sigma=sigma, labels=labels)
@@ -871,23 +864,23 @@ class AbsorbingState(Diffusion):
       assert self.parameterization == 'mean'
 
   def q_xt(self, x, alpha_t):
-    """Computes the noisy sample xt.
+    """Sample noisy token ids `x_t` from clean ids `x`.
 
     Args:
-      x: int torch.Tensor with shape (batch_size,
-          diffusion_model_input_length), input. 
-      alpha_t: float torch.Tensor with shape (batch_size, 1).
+      x (LongTensor): [B, L] token ids.
+      alpha_t (FloatTensor): [B, 1] signal level.
+
+    Returns:
+      x_t (LongTensor): [B, L] noisy token ids.
     """
-    move_indices = torch.rand(
-      * x.shape, device=x.device) < 1 - alpha_t
+    move_indices = torch.rand(*x.shape, device=x.device) < 1 - alpha_t
     xt = torch.where(move_indices, self.mask_index, x)
     if self.ignore_bos:
       xt[:, 0] = x[:, 0]
     return xt
 
   def prior_sample(self, *batch_dims):
-    return self.mask_index * torch.ones(
-      * batch_dims, dtype=torch.int64, device=self.device)
+    return self.mask_index * torch.ones(*batch_dims, dtype=torch.int64, device=self.device)
 
   def _posterior_from_x0(self, x0, xt, alpha_s, alpha_t):
     """From the clean x0, or denoiser predictions, implement 
