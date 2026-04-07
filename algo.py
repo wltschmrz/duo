@@ -38,9 +38,9 @@ class AR(trainer_base.TrainerBase):
     valid_tokens = valid_tokens[:, 1:]
     return input_tokens, output_tokens, valid_tokens
 
-  def nll(self, input_tokens, output_tokens,
-          current_accumulation_step):
-    del current_accumulation_step
+  def nll(self, input_tokens, labels, output_tokens,
+          current_accumulation_step=None, train_mode=False):
+    del labels, current_accumulation_step, train_mode
     output = self.backbone(input_tokens, None)
     output[:, :, self.mask_index] = self.neg_infinity
     output = output.log_softmax(-1)
@@ -590,13 +590,18 @@ class DUO(DUO_BASE):
                           device=self.device)
     return alpha_t * x + sigma_t * epsilon
 
-  def nll(self, x0, output_tokens,
+  def nll(self, x0, labels, output_tokens,
           current_accumulation_step=None, train_mode=False):
+    del labels
     use_true_nll = (self.global_step > self.curriculum_end
                     or not train_mode)
     if use_true_nll:
-      return super().nll(x0, output_tokens,
-                         current_accumulation_step)
+      return super().nll(
+        x0=x0,
+        labels=None,
+        output_tokens=output_tokens,
+        current_accumulation_step=current_accumulation_step,
+        train_mode=train_mode)
     del output_tokens
     t = self._sample_t(x0.shape[0], current_accumulation_step)
     gamma_t = self.gamma_min + t * (self.gamma_max
@@ -713,9 +718,9 @@ class Distillation(DUO):
     n = self.global_step // self.update_teacher_every
     return 2 ** n / self.T
 
-  def nll(self, x0, output_tokens,
+  def nll(self, x0, labels, output_tokens,
           current_accumulation_step=None, train_mode=None):
-    del output_tokens, train_mode
+    del labels, output_tokens, train_mode
     t = self._sample_t(x0.shape[0], current_accumulation_step)
     dt = self._compute_dt()
     t = torch.clip(t + dt, 0, 1)
