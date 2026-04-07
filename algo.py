@@ -80,6 +80,7 @@ class MDLM(trainer_base.AbsorbingState):
     self._validate_configuration()
 
   def _validate_configuration(self):
+    """sampling.predictor=ancestral_cache 임을 검증"""
     assert self.sampler != 'ancestral', \
       'sampling.predictor=ancestral is not desirable because ' \
       'it is slow. Please set sampling.predictor=ancestral_cache'

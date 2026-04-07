@@ -77,69 +77,65 @@ class TrainerBase(L.LightningModule):
     self,
     config,
     tokenizer: transformers.PreTrainedTokenizer,
-    vocab_size=None):
+    vocab_size=None
+    ):
+    
     super().__init__()
     self.save_hyperparameters()
     self.config = config
-    if hasattr(self.config.algo, 'ignore_bos'):
-      self.ignore_bos = config.algo.ignore_bos
-    else:
-      self.ignore_bos = False
-    if hasattr(self.config.algo, 'loss_type'):
-      self.loss_type = config.algo.loss_type
-    self.tokenizer = tokenizer
-    if vocab_size is None:
-      self.vocab_size = len(self.tokenizer)
-    else:
-      self.vocab_size = vocab_size
-    self.sampler = self.config.sampling.predictor
-    self.antithetic_sampling = self.config.training.antithetic_sampling
-    self.parameterization = self.config.algo.parameterization
-    if self.config.algo.backbone == 'dit':
-      self.backbone = models.dit.DIT(
-        self.config, vocab_size=self.vocab_size)
-    elif self.config.algo.backbone == 'unet':
-      self.backbone = models.unet.UNet(self.config, self.vocab_size)
-    elif self.config.algo.backbone == 'dimamba':
-      self.backbone = models.dimamba.DiMamba(
-        self.config,
-        vocab_size=self.vocab_size,
-        pad_token_id=self.tokenizer.pad_token_id)
-    elif self.config.algo.backbone == 'hf_dit':
-      self.backbone = transformers.AutoModelForMaskedLM.from_pretrained(
-        config.eval.checkpoint_path, trust_remote_code=True)
 
-    self.T = self.config.algo.T
-    self.num_tokens = self.config.model.length
-    self.p_nucleus = self.config.sampling.p_nucleus
-    # Noise Schedule
-    if config.noise.type == 'log-linear':
-      self.noise = LogLinear(config.noise.eps)
-    elif config.noise.type == 'cosine':
-      self.noise = Cosine(config.noise.eps)
-    else:
-      raise ValueError(config.noise.type)
-    # Class-conditional training arguments
-    self.num_classes = config.data.get('num_classes', None)
+    algo_config = config.algo
+    model_config = config.model
+    data_config = config.data
+    training_config = config.training
+    sampling_config = config.sampling
+    eval_config = config.eval
+    optim_config = config.optim
+
+    self.tokenizer = tokenizer
+    self.vocab_size = len(self.tokenizer) if vocab_size is None else vocab_size
+
+    self.ignore_bos = getattr(algo_config, 'ignore_bos', False)
+    if hasattr(algo_config, 'loss_type'):
+      self.loss_type = algo_config.loss_type
+    self.parameterization = algo_config.parameterization
+    self.T = algo_config.T
+    self.time_conditioning = algo_config.time_conditioning
+
+    self.num_tokens = model_config.length
+    self.num_classes = data_config.get('num_classes', None)
     self.class_conditional = self.num_classes is not None
-    self.class_cond_dropout = config.training.class_dropout_p 
+    self.class_cond_dropout = training_config.class_dropout_p
+    self.antithetic_sampling = training_config.antithetic_sampling
+    self.sampling_eps = training_config.sampling_eps
+    self.sampler = sampling_config.predictor
+    self.p_nucleus = sampling_config.p_nucleus
+    self.lr = optim_config.lr
+
+    match algo_config.backbone:
+      case 'dit': self.backbone = models.dit.DIT(self.config, vocab_size=self.vocab_size)
+      case 'unet': self.backbone = models.unet.UNet(self.config, self.vocab_size)
+      case 'dimamba': self.backbone = models.dimamba.DiMamba(self.config, 
+        vocab_size=self.vocab_size, pad_token_id=self.tokenizer.pad_token_id)
+      case 'hf_dit': self.backbone = transformers.AutoModelForMaskedLM.from_pretrained(
+        self.config.eval.checkpoint_path, trust_remote_code=True)
+      case _: raise ValueError(algo_config.backbone)
+
+    match self.config.noise.type:
+      case 'log-linear': self.noise = LogLinear(self.config.noise.eps)
+      case 'cosine': self.noise = Cosine(self.config.noise.eps)
+      case _: raise ValueError(self.config.noise.type)
 
     self.metrics = metrics.Metrics(
-      gen_ppl_eval_model_name_or_path=\
-        self.config.eval.gen_ppl_eval_model_name_or_path,
-      eval_ppl_batch_size=\
-        self.config.eval.perplexity_batch_size)
+      gen_ppl_eval_model_name_or_path=eval_config.gen_ppl_eval_model_name_or_path,
+      eval_ppl_batch_size=eval_config.perplexity_batch_size,
+    )
 
-    if self.config.training.ema > 0:
-      self.ema = models.ema.ExponentialMovingAverage(
-        self._get_parameters(),
-        decay=self.config.training.ema)
+    if training_config.ema > 0:
+      self.ema = models.ema.ExponentialMovingAverage(self._get_parameters(), decay=training_config.ema)
     else:
       self.ema = None
-    
-    self.lr = self.config.optim.lr
-    self.sampling_eps = self.config.training.sampling_eps
-    self.time_conditioning = self.config.algo.time_conditioning
+
     self.neg_infinity = -1000000.0
     self.fast_forward_epochs = None
     self.fast_forward_batches = None
@@ -300,8 +296,7 @@ class TrainerBase(L.LightningModule):
     assert self.metrics.train_nlls.nll.weight == 0
 
   def training_step(self, batch, batch_idx):
-    current_accumulation_step = (
-      batch_idx % self.trainer.accumulate_grad_batches)
+    current_accumulation_step = (batch_idx % self.trainer.accumulate_grad_batches)
     losses = self._loss(batch['input_ids'],
                         batch.get('labels', None),
                         batch['attention_mask'],
@@ -416,14 +411,9 @@ class TrainerBase(L.LightningModule):
           current_accumulation_step=None, train_mode=False):
     raise NotImplementedError
 
-  def _loss(self, x0, labels, valid_tokens,
-            current_accumulation_step=None,
-            train_mode=False):
-    (input_tokens, output_tokens,
-     valid_tokens) = self._process_model_input(
-       x0, valid_tokens)
-    loss = self.nll(input_tokens, labels, output_tokens,
-                    current_accumulation_step, train_mode)
+  def _loss(self, x0, labels, valid_tokens, current_accumulation_step=None, train_mode=False):
+    (input_tokens, output_tokens, valid_tokens) = self._process_model_input(x0, valid_tokens)
+    loss = self.nll(input_tokens, labels, output_tokens, current_accumulation_step, train_mode)
     assert loss.ndim == 2
     if self.ignore_bos:
       loss[:, 1:] = loss[:, 1:]
@@ -497,11 +487,9 @@ class Diffusion(TrainerBase):
                     dalpha_t, low_var):
     raise NotImplementedError
 
-  def nll(self, x0, labels, output_tokens,
-          current_accumulation_step=None, train_mode=False):
+  def nll(self, x0, labels, output_tokens, current_accumulation_step=None, train_mode=False):
     del output_tokens
-    t = self._sample_t(x0.shape[0],
-                       current_accumulation_step)
+    t = self._sample_t(x0.shape[0], current_accumulation_step)
     assert t.shape[0] == x0.shape[0]
     if self.T > 0:
       t = (t * self.T).to(torch.int)
@@ -855,21 +843,20 @@ class Diffusion(TrainerBase):
 
 class AbsorbingState(Diffusion):
   def __init__(self, config, tokenizer):
-    # NOTE: Ideally, we should do 
-    # vocab_size = len(tokenizer), so that we account
-    # for the special tokens added in dataloader.py.
-    # But we use tokenizer.vocab_size so as to to be
-    # consistent with the prior checkpoints.
+    # NOTE: 이상적으로는 dataloader.py 에서 추가된 Special token 등을 고려하여 
+    # vocab_size = len(tokenizer) 로 설정해야 한다. 
+    # 하지만 이전 Checkpoint 들과의 일관성을 유지하기 위해 tokenizer.vocab_size 를 사용한다.
     vocab_size = tokenizer.vocab_size
-    if (not hasattr(tokenizer, 'mask_token')
-        or tokenizer.mask_token is None):
+
+    if (not hasattr(tokenizer, 'mask_token') or tokenizer.mask_token is None):
       self.mask_index = vocab_size
       vocab_size += 1
     else:
       self.mask_index = tokenizer.mask_token_id
+
     self.subs_masking = config.algo.subs_masking
-    super().__init__(config, tokenizer,
-                     vocab_size=vocab_size)
+
+    super().__init__(config, tokenizer, vocab_size=vocab_size)
     self.save_hyperparameters()
 
   def _validate_configuration(self):
