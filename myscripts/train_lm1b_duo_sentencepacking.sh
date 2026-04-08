@@ -15,21 +15,24 @@ set -euo pipefail
 #SBATCH --open-mode=append            # Do not overwrite logs
 #SBATCH --requeue                     # Requeue upon pre-emption
 
-
+# gpu 관련 설정
 GPU_IDS="${GPU_IDS:-${CUDA_VISIBLE_DEVICES:-0}}"
 export CUDA_VISIBLE_DEVICES="${GPU_IDS}"
 N_GPU="${N_GPU:-$(awk -F',' '{print NF}' <<< "${GPU_IDS}")}"
+
+# batch size 관련 설정
 PER_GPU_BATCH="${PER_GPU_BATCH:-512}"
 TARGET_GLOBAL_BATCH="${TARGET_GLOBAL_BATCH:-512}"
 RESUME_CKPT_PATH="${RESUME_CKPT_PATH:-}"
 
-
+# batch size 검증
 if (( TARGET_GLOBAL_BATCH % (PER_GPU_BATCH * N_GPU) != 0 )); then
   echo "ERROR: TARGET_GLOBAL_BATCH must be divisible by PER_GPU_BATCH*N_GPU."
   exit 1
 fi
 ACCUM=$(( TARGET_GLOBAL_BATCH / (PER_GPU_BATCH * N_GPU) ))
 
+# 추가 인자 설정
 EXTRA_ARGS=()
 if [[ -n "${RESUME_CKPT_PATH}" ]]; then
   EXTRA_ARGS+=("checkpointing.resume_from_ckpt=true")
@@ -48,7 +51,7 @@ python -u -m main \
   trainer.devices="${N_GPU}" \
   trainer.accumulate_grad_batches="${ACCUM}" \
   data=lm1b-wrap \
-  wandb.name=duo-lm1b-small-100k-b200x1 \
+  wandb.name=duo-lm1b-wrap-small-100k-b200x1 \
   model=small \
   algo=duo \
   model.length=128 \

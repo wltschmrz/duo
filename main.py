@@ -318,6 +318,8 @@ def main(config):
     diffusion_model = algo.Distillation
   elif config.algo.name == 'ot-finetune':
     diffusion_model = algo.OptimalTransportFinetune
+  elif config.algo.name == 'fldd':
+    diffusion_model = algo.FLDD
   else:
     raise ValueError(
       f'Invalid algorithm name: {config.algo.name}')
