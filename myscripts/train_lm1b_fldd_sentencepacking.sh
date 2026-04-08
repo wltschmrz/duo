@@ -34,11 +34,23 @@ if (( TARGET_GLOBAL_BATCH % (PER_GPU_BATCH * N_GPU) != 0 )); then
 fi
 ACCUM=$(( TARGET_GLOBAL_BATCH / (PER_GPU_BATCH * N_GPU) ))
 
+# wandb 관련 설정
+WANDB_NAME="${WANDB_NAME:-fldd-lm1b-wrap-small-100k-H200x4}"
+SEED="${SEED:-1}"
+WANDB_RUN_ID="${WANDB_RUN_ID:-${WANDB_NAME}_${SEED}}"
+
 # 추가 인자 설정
 EXTRA_ARGS=()
 if [[ -n "${RESUME_CKPT_PATH}" ]]; then
+  RESUME_SAVE_DIR="$(dirname "$(dirname "${RESUME_CKPT_PATH}")")"
+  # PyTorch 2.6+: torch.load defaults to weights_only=True.
+  # Lightning resume checkpoints may contain OmegaConf objects.
+  export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
   EXTRA_ARGS+=("checkpointing.resume_from_ckpt=true")
   EXTRA_ARGS+=("checkpointing.resume_ckpt_path=${RESUME_CKPT_PATH}")
+  EXTRA_ARGS+=("checkpointing.save_dir=${RESUME_SAVE_DIR}")
+  EXTRA_ARGS+=("wandb.id=${WANDB_RUN_ID}")
+  EXTRA_ARGS+=("+wandb.resume=must")
 fi
 
 
@@ -49,13 +61,14 @@ python -u -m main \
   loader.eval_global_batch_size="${TARGET_GLOBAL_BATCH}" \
   trainer.devices="${N_GPU}" \
   trainer.accumulate_grad_batches="${ACCUM}" \
+  seed="${SEED}" \
   data=lm1b-wrap \
-  wandb.name=fldd-lm1b-wrap-small-100k-H200x4 \
+  wandb.name="${WANDB_NAME}" \
   model=small \
   algo=fldd \
   model.length=128 \
   trainer.max_steps=100000 \
-  trainer.val_check_interval=1000 \
+  trainer.val_check_interval=500 \
   trainer.precision=bf16-mixed \
-  +checkpoint_every_n_steps.every_n_train_steps=2000 \
+  callbacks.checkpoint_every_n_steps.every_n_train_steps=2000 \
   "${EXTRA_ARGS[@]}"
