@@ -2,7 +2,7 @@ train: lm1b
 valid: lm1b
 modality: text
 tokenizer_name_or_path: bert-base-uncased
-cache_dir: /home/geonyounglee/workspace/duo/.cache
+cache_dir: /mnt/data1/geonyounglee/workspace/.cache
 wrap: True
 streaming: False
 insert_train_eos: True
