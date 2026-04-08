@@ -90,13 +90,12 @@ class MDLM(trainer_base.AbsorbingState):
     del sigma
     model_output[:, :, self.mask_index] += self.neg_infinity
     
-    # Normalize the model_output such that x.exp() is
-    # a probability distribution over vocab_size.
+    # model_output를 정규화하여 x.exp()가 \
+    # vocab_size에 대한 probability distribution이 되도록 한다.
     model_output = model_output - torch.logsumexp(model_output, dim=-1, keepdim=True)
-    # Apply updates directly in the logits matrix.
-    # For the logits of the unmasked tokens, set all values
-    # to -infinity except for the indices corresponding to
-    # the unmasked tokens.
+    # logits matrix에 직접적으로 updates를 적용한다. \
+    # unmasked token들에 대한 logits의 경우, 
+    # 해당 token index를 제외한 모든 값을 -infinity로 설정한다.
     unmasked_indices = (xt != self.mask_index)
     model_output[unmasked_indices] = self.neg_infinity
     model_output[unmasked_indices, xt[unmasked_indices]] = 0
@@ -761,3 +760,248 @@ class Distillation(DUO):
              on_epoch=False,
              sync_dist=True)
     return super().training_step(batch, batch_idx)
+
+
+class FLDD(trainer_base.TrainerBase):
+  """Forward-Learned Discrete Diffusion with warm-up + REINFORCE."""
+
+  def __init__(self, config, tokenizer):
+    # TrainerBase.__init__ creates EMA using _get_parameters().
+    # Keep this attribute defined before calling super().
+    self.forward_backbone = None
+    super().__init__(config, tokenizer)
+    # Separate learnable network for forward marginals q_phi(z_t | x).
+    self.forward_backbone = copy.deepcopy(self.backbone)
+    if self.config.training.ema > 0:
+      # Rebuild EMA to include forward_backbone parameters.
+      self.ema = models.ema.ExponentialMovingAverage(
+        self._get_parameters(), decay=self.config.training.ema)
+    self._validate_configuration()
+
+  def _validate_configuration(self):
+    super()._validate_configuration()
+    assert self.config.algo.T > 0, 'FLDD requires discrete time steps (T > 0).'
+    assert self.config.algo.time_conditioning, 'FLDD requires time conditioning.'
+
+  def _get_parameters(self):
+    chains = [self.backbone.parameters(), self.noise.parameters()]
+    if isinstance(self.forward_backbone, torch.nn.Module):
+      chains.insert(1, self.forward_backbone.parameters())
+    return itertools.chain(*chains)
+
+  def _eval_mode(self):
+    super()._eval_mode()
+    if isinstance(self.forward_backbone, torch.nn.Module):
+      self.forward_backbone.eval()
+
+  def _train_mode(self):
+    super()._train_mode()
+    if isinstance(self.forward_backbone, torch.nn.Module):
+      self.forward_backbone.train()
+
+  def _process_model_input(self, x0, valid_tokens):
+    return x0, None, valid_tokens
+
+  def _process_sigma(self, sigma):
+    assert sigma.ndim == 2
+    sigma = sigma.mean(-1).squeeze()
+    if sigma.ndim == 0:
+      sigma = sigma.unsqueeze(0)
+    if not self.time_conditioning:
+      sigma = torch.zeros_like(sigma)
+    return sigma
+
+  def _process_model_output(self, model_output, xt, sigma):
+    del xt, sigma
+    return model_output.log_softmax(dim=-1)
+
+  def _sigma_from_alphat(self, alpha_t):
+    return -torch.log(alpha_t.clamp_min(1e-12))
+
+  def _sigma_from_step(self, step_idx):
+    t = step_idx.to(self.dtype) / self.T
+    t = t[:, None]
+    _, alpha_t = self.noise(t)
+    return self._sigma_from_alphat(alpha_t)
+
+  def _run_forward_backbone(self, x, sigma, labels=None):
+    sigma = self._process_sigma(sigma)
+    with torch.amp.autocast('cuda', dtype=torch.float32):
+      logits = self.forward_backbone(
+        x=x, sigma=sigma, class_cond=labels, weights=None)
+    return logits.log_softmax(dim=-1)
+
+  def _forward_marginal_probs(self, x0, step_idx, labels=None):
+    sigma = self._sigma_from_step(step_idx)
+    log_probs = self._run_forward_backbone(x0, sigma=sigma, labels=labels)
+    probs = log_probs.exp()
+
+    # Optional blending toward a simple uniform prior as t -> T.
+    prior_blend = self.config.algo.fldd.prior_blend
+    if prior_blend > 0:
+      blend = prior_blend * (step_idx.to(self.dtype) / self.T)
+      blend = blend[:, None, None]
+      probs = (1 - blend) * probs + blend / self.vocab_size
+
+    # Enforce q(z_0 | x) = delta(z_0 - x).
+    step0_mask = step_idx == 0
+    if step0_mask.any():
+      # Avoid in-place edits on tensors that require grad.
+      # Build replacement rows separately, then write into a cloned tensor.
+      probs_step0 = torch.zeros_like(probs[step0_mask])
+      probs_step0.scatter_(-1, x0[step0_mask][..., None], 1.0)
+      probs = probs.clone()
+      probs[step0_mask] = probs_step0
+
+    probs = probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+    return probs
+
+  def _current_relaxed_tau(self):
+    cfg = self.config.algo.fldd
+    if cfg.warmup_steps <= 0:
+      return cfg.relaxed_tau_end
+    frac = min(1.0, max(0.0, self.global_step / cfg.warmup_steps))
+    # Exponential interpolation in log-space.
+    log_tau = (1 - frac) * np.log(cfg.relaxed_tau_start) + frac * np.log(
+      cfg.relaxed_tau_end)
+    return float(np.exp(log_tau))
+
+  def _use_relaxed_path(self, train_mode):
+    cfg = self.config.algo.fldd
+    if not train_mode or not cfg.use_relaxed_warmup:
+      return False
+    return self.global_step < cfg.warmup_steps
+
+  def _maximum_coupling_posterior(self, us, ut, zt):
+    eps = 1e-12
+    common = torch.minimum(us, ut)
+    zt_idx = zt[..., None]
+
+    ut_k = torch.gather(ut, -1, zt_idx).squeeze(-1).clamp_min(eps)
+    common_k = torch.gather(common, -1, zt_idx).squeeze(-1)
+    p_same = (common_k / ut_k).clamp(0.0, 1.0)
+
+    deficit = (us - ut).clamp_min(0.0)
+    deficit_sum = deficit.sum(dim=-1, keepdim=True)
+    redistribution = deficit / deficit_sum.clamp_min(eps)
+    zero_mass_mask = (deficit_sum <= eps).squeeze(-1)
+    if zero_mass_mask.any():
+      redistribution[zero_mass_mask] = 0
+      redistribution[zero_mass_mask].scatter_(
+        -1, zt_idx[zero_mass_mask], 1.0)
+
+    posterior = (1 - p_same)[..., None] * redistribution
+    posterior.scatter_(-1, zt_idx, p_same[..., None])
+    posterior = posterior / posterior.sum(dim=-1, keepdim=True).clamp_min(eps)
+    return posterior
+
+  def _maximum_coupling_posterior_relaxed(self, us, ut, zt_soft):
+    """Posterior for relaxed z_t (weighted mixture over discrete posteriors)."""
+    eps = 1e-12
+    common = torch.minimum(us, ut)
+    p_same_vec = (common / ut.clamp_min(eps)).clamp(0.0, 1.0)
+
+    deficit = (us - ut).clamp_min(0.0)
+    deficit_sum = deficit.sum(dim=-1, keepdim=True)
+    redistribution = deficit / deficit_sum.clamp_min(eps)
+    zero_mass_mask = (deficit_sum <= eps).squeeze(-1)
+    if zero_mass_mask.any():
+      redistribution[zero_mass_mask] = zt_soft[zero_mass_mask]
+
+    stay_term = zt_soft * p_same_vec
+    move_mass = (zt_soft * (1 - p_same_vec)).sum(dim=-1, keepdim=True)
+    posterior = stay_term + move_mass * redistribution
+    posterior = posterior / posterior.sum(dim=-1, keepdim=True).clamp_min(eps)
+    return posterior
+
+  def _sample_relaxed_zt(self, probs):
+    tau = self._current_relaxed_tau()
+    dist = torch.distributions.RelaxedOneHotCategorical(
+      temperature=tau, probs=probs)
+    zt_soft = dist.rsample()
+    zt_idx = zt_soft.argmax(dim=-1)
+    return zt_soft, zt_idx, tau
+
+  def _prior_alignment_loss(self, x0, labels):
+    weight = self.config.algo.fldd.prior_alignment_weight
+    if weight <= 0:
+      return None
+    tT = torch.full((x0.shape[0],), self.T, device=self.device, dtype=torch.long)
+    uT = self._forward_marginal_probs(x0=x0, step_idx=tT, labels=labels)
+    log_uniform = -np.log(self.vocab_size)
+    return weight * (uT * (uT.clamp_min(1e-12).log() - log_uniform)).sum(dim=-1)
+
+  def nll(self, x0, labels, output_tokens,
+          current_accumulation_step=None, train_mode=False):
+    del output_tokens, current_accumulation_step
+    batch_size = x0.shape[0]
+
+    t = torch.randint(
+      low=1, high=self.T + 1, size=(batch_size,), device=self.device)
+    s = t - 1
+
+    ut = self._forward_marginal_probs(x0=x0, step_idx=t, labels=labels)
+    us = self._forward_marginal_probs(x0=x0, step_idx=s, labels=labels)
+    use_relaxed = self._use_relaxed_path(train_mode)
+    if use_relaxed:
+      zt_soft, zt, tau = self._sample_relaxed_zt(ut)
+      us_given_t = self._maximum_coupling_posterior_relaxed(
+        us=us, ut=ut, zt_soft=zt_soft)
+      del zt_soft
+      self.log(
+        name='fldd/relaxed_tau',
+        value=tau,
+        on_step=True,
+        on_epoch=False,
+        sync_dist=True)
+    else:
+      zt = sample_categorical(ut)
+      us_given_t = self._maximum_coupling_posterior(us=us, ut=ut, zt=zt)
+    del us
+
+    sigma_t = self._sigma_from_step(t)
+    log_vs_given_t = self.forward(zt, sigma=sigma_t, labels=labels)
+
+    loss = (us_given_t * (
+      us_given_t.clamp_min(1e-12).log() - log_vs_given_t)).sum(dim=-1)
+
+    # Add optional q_phi(z_T|x) -> prior alignment term.
+    prior_loss = self._prior_alignment_loss(x0=x0, labels=labels)
+    if prior_loss is not None:
+      loss = loss + prior_loss
+
+    # Optional REINFORCE score-function term after warm-up.
+    if (train_mode
+        and self.config.algo.fldd.use_reinforce
+        and not use_relaxed):
+      log_q_zt = torch.gather(
+        ut.clamp_min(1e-12).log(), -1, zt[..., None]).squeeze(-1)
+      baseline = loss.detach().mean(dim=1, keepdim=True)
+      advantage = loss.detach() - baseline
+      reinforce_term = advantage * log_q_zt
+      loss = loss + self.config.algo.fldd.reinforce_weight * reinforce_term
+    del ut
+
+    return loss
+
+  @torch.no_grad()
+  def generate_samples(self, num_samples, labels=None, num_steps=None, eps=1e-5):
+    del eps
+    if num_steps is None:
+      num_steps = self.T
+
+    x = torch.randint(
+      low=0,
+      high=self.vocab_size,
+      size=(num_samples, self.num_tokens),
+      device=self.device)
+    if labels is not None:
+      labels = labels.to(self.device)
+
+    for step in range(num_steps, 0, -1):
+      step_idx = torch.full(
+        (num_samples,), step, device=self.device, dtype=torch.long)
+      sigma_t = self._sigma_from_step(step_idx)
+      log_probs = self.forward(x, sigma=sigma_t, labels=labels)
+      x = sample_categorical(log_probs.exp())
+    return x
