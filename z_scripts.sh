@@ -28,6 +28,9 @@ mkdir -p /NHNHOME/WORKSPACE/0226010404_A/BISPL/DATA/geonyounglee/.hf_cache
 alias fixpath='export PATH="/NHNHOME/WORKSPACE/0226010404_A/BISPL/BISPL2/miniconda/envs/ddlm/bin:$PATH"'
 fixpath
 
+# git branch 옆 dir에 clone
+git clone -b ddlms https://github.com/geonyounglee/duo.git
+
 
 cd /NHNHOME/WORKSPACE/0226010404_A/BISPL/DATA/geonyounglee/duo
 mkdir -p watch_folder
