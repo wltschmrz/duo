@@ -1,0 +1,22 @@
+name: fldd
+backbone: dit  # dit / dimamba / hf_dit
+parameterization: mean
+time_conditioning: True
+T: 10
+subs_masking: False
+causal_attention: False
+loss_type: elbo
+ignore_bos: False
+
+fldd:
+  # Strict boundary: q(z_T|x) = p(z_T) is enforced by construction in code.
+  enforce_terminal_prior: True
+  include_elbo_boundary_terms: True
+  prior_blend: 0.0
+  use_relaxed_warmup: True
+  warmup_steps: 50000
+  relaxed_tau_start: 1.0
+  relaxed_tau_end: 1.0e-3
+  use_reinforce: True
+  reinforce_weight: 1.0
+  prior_alignment_weight: 0.0

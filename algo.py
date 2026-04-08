@@ -11,6 +11,9 @@ import torch.nn.functional as F
 
 import trainer_base
 import utils
+import itertools
+import models
+from trainer_base import sample_categorical
 
 
 class AR(trainer_base.TrainerBase):
@@ -853,6 +856,15 @@ class FLDD(trainer_base.TrainerBase):
       probs = probs.clone()
       probs[step0_mask] = probs_step0
 
+    # Enforce q(z_T | x) = p(z_T) exactly (uniform categorical prior).
+    # This makes the FLDD terminal boundary condition hold by construction.
+    enforce_terminal_prior = getattr(
+      self.config.algo.fldd, 'enforce_terminal_prior', True)
+    stepT_mask = step_idx == self.T
+    if enforce_terminal_prior and stepT_mask.any():
+      probs = probs.clone()
+      probs[stepT_mask] = 1.0 / self.vocab_size
+
     probs = probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-12)
     return probs
 
@@ -931,6 +943,21 @@ class FLDD(trainer_base.TrainerBase):
     log_uniform = -np.log(self.vocab_size)
     return weight * (uT * (uT.clamp_min(1e-12).log() - log_uniform)).sum(dim=-1)
 
+  def _elbo_boundary_terms(self, x0, labels):
+    """Returns (L_rec, L_prior) as token-wise tensors with shape [B, L]."""
+    batch_size = x0.shape[0]
+    # q(z0|x) = delta(z0 - x) => E_q[-log p(x|z0)] is exactly zero when
+    # using the standard deterministic reconstruction boundary.
+    l_rec = torch.zeros(
+      (batch_size, x0.shape[1]), device=x0.device, dtype=self.dtype)
+
+    # L_prior = KL(q(zT|x) || p(zT)), where p(zT) is uniform categorical.
+    tT = torch.full((batch_size,), self.T, device=self.device, dtype=torch.long)
+    uT = self._forward_marginal_probs(x0=x0, step_idx=tT, labels=labels)
+    log_uniform = -np.log(self.vocab_size)
+    l_prior = (uT * (uT.clamp_min(1e-12).log() - log_uniform)).sum(dim=-1)
+    return l_rec, l_prior
+
   def nll(self, x0, labels, output_tokens,
           current_accumulation_step=None, train_mode=False):
     del output_tokens, current_accumulation_step
@@ -964,6 +991,15 @@ class FLDD(trainer_base.TrainerBase):
 
     loss = (us_given_t * (
       us_given_t.clamp_min(1e-12).log() - log_vs_given_t)).sum(dim=-1)
+
+    # Full ELBO decomposition:
+    #   L = L_diff + L_rec + L_prior
+    # Under strict FLDD boundaries, L_rec and L_prior are zero by construction.
+    include_elbo_boundary_terms = getattr(
+      self.config.algo.fldd, 'include_elbo_boundary_terms', True)
+    if include_elbo_boundary_terms:
+      l_rec, l_prior = self._elbo_boundary_terms(x0=x0, labels=labels)
+      loss = loss + l_rec + l_prior
 
     # Add optional q_phi(z_T|x) -> prior alignment term.
     prior_loss = self._prior_alignment_loss(x0=x0, labels=labels)
