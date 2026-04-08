@@ -15,6 +15,7 @@ from torchmetrics.image.inception import InceptionScore
 from tqdm import tqdm, trange
 
 import algo
+import algo2
 import dataloader
 import utils
 
@@ -305,7 +306,7 @@ def main(config):
     case 'duo': diffusion_model = algo.DUO
     case 'distillation': diffusion_model = algo.Distillation
     case 'ot-finetune': diffusion_model = algo.OptimalTransportFinetune
-    case 'fldd': diffusion_model = algo.FLDD
+    case 'sfldd': diffusion_model = algo2.SFLDD
     case _: raise ValueError(f'Invalid algorithm name: {config.algo.name}')
 
   kwargs = dict(

@@ -23,6 +23,17 @@ CUDA_VISIBLE_DEVICES=2 nohup bash "myscripts/train_lm1b_ar_sentencepacking.sh" \
 CUDA_VISIBLE_DEVICES=1 nohup bash "myscripts/train_lm1b_duo_sentencepacking.sh" \
   > watch_folder/duo_lm1b_wrap_b200x1.log 2>&1 &
 
+
+CUDA_VISIBLE_DEVICES=0,1,2,3 RESUME_CKPT_PATH="/home/geonyounglee/workspace/duo/outputs/lm1b/2026.04.08/194939/checkpoints/last.ckpt" \
+WANDB_NAME="fldd-lm1b-wrap-small-100k-H200x4" SEED=1 \
+nohup bash "myscripts/train_lm1b_fldd_sentencepacking.sh" \
+  > watch_folder/fldd_lm1b_wrap_h200x4-2.log 2>&1 &
+
+
+CUDA_VISIBLE_DEVICES=4,5,6,7 nohup bash "myscripts/train_lm1b_sfldd_sentencepacking.sh" \
+  > watch_folder/sfldd_lm1b_wrap_h200x4.log 2>&1 &
+
+
 pgrep -af "python -u -m main|train_lm1b_mdlm_sentencepacking.sh"
 kill -15 <PID>
 ps -fp <PID>

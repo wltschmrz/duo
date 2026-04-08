@@ -21,6 +21,8 @@ set -euo pipefail
 GPU_IDS="${GPU_IDS:-${CUDA_VISIBLE_DEVICES:-0}}"
 export CUDA_VISIBLE_DEVICES="${GPU_IDS}"
 N_GPU="${N_GPU:-$(awk -F',' '{print NF}' <<< "${GPU_IDS}")}"
+NUM_WORKERS="${NUM_WORKERS:-64}"
+export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 
 # batch size settings
 PER_GPU_BATCH="${PER_GPU_BATCH:-128}"
@@ -35,7 +37,7 @@ fi
 ACCUM=$(( TARGET_GLOBAL_BATCH / (PER_GPU_BATCH * N_GPU) ))
 
 # wandb settings
-WANDB_NAME="${WANDB_NAME:-fldd-lm1b-wrap-small-100k-H200x4}"
+WANDB_NAME="${WANDB_NAME:-sfldd-lm1b-wrap-small-100k-H200x4}"
 SEED="${SEED:-1}"
 WANDB_RUN_ID="${WANDB_RUN_ID:-${WANDB_NAME}_${SEED}}"
 
@@ -59,13 +61,14 @@ python -u -m main \
   loader.eval_batch_size="${PER_GPU_BATCH}" \
   loader.global_batch_size="${TARGET_GLOBAL_BATCH}" \
   loader.eval_global_batch_size="${TARGET_GLOBAL_BATCH}" \
+  loader.num_workers="${NUM_WORKERS}" \
   trainer.devices="${N_GPU}" \
   trainer.accumulate_grad_batches="${ACCUM}" \
   seed="${SEED}" \
   data=lm1b-wrap \
   wandb.name="${WANDB_NAME}" \
   model=small \
-  algo=fldd \
+  algo=sfldd \
   model.length=128 \
   trainer.max_steps=100000 \
   trainer.val_check_interval=500 \

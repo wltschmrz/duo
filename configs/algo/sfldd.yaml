@@ -1,4 +1,4 @@
-name: fldd
+name: sfldd
 backbone: dit  # dit / dimamba / hf_dit
 parameterization: mean
 time_conditioning: True
@@ -20,3 +20,11 @@ fldd:
   use_reinforce: True
   reinforce_weight: 1.0
   prior_alignment_weight: 0.0
+  
+  sentence_align_weight: 0.0
+  sentence_encoder_model_name_or_path: sentence-transformers/all-MiniLM-L6-v2
+  sentence_encoder_pooling: mean  # mean / cls
+  sentence_encoder_l2_normalize: True
+  sentence_encoder_max_length: 256
+  sentence_encoder_skip_special_tokens: True
+  sentence_align_reinforce_weight: 0.1
