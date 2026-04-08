@@ -11,7 +11,7 @@ ignore_bos: False
 fldd:
   prior_blend: 0.0
   use_relaxed_warmup: True
-  warmup_steps: 10000
+  warmup_steps: 20000
   relaxed_tau_start: 1.0
   relaxed_tau_end: 1.0e-3
   use_reinforce: True
