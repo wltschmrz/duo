@@ -23,7 +23,7 @@ export CUDA_VISIBLE_DEVICES="${GPU_IDS}"
 N_GPU="${N_GPU:-$(awk -F',' '{print NF}' <<< "${GPU_IDS}")}"
 
 # batch size 관련 설정
-PER_GPU_BATCH="${PER_GPU_BATCH:-512}"
+PER_GPU_BATCH="${PER_GPU_BATCH:-128}"
 TARGET_GLOBAL_BATCH="${TARGET_GLOBAL_BATCH:-512}"
 RESUME_CKPT_PATH="${RESUME_CKPT_PATH:-}"
 
@@ -57,5 +57,5 @@ python -u -m main \
   trainer.max_steps=100000 \
   trainer.val_check_interval=1000 \
   trainer.precision=bf16-mixed \
-  checkpoint_every_n_steps.every_n_train_steps=1000 \
+  +checkpoint_every_n_steps.every_n_train_steps=2000 \
   "${EXTRA_ARGS[@]}"

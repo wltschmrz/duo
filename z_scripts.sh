@@ -32,6 +32,10 @@ fixpath
 cd /NHNHOME/WORKSPACE/0226010404_A/BISPL/DATA/geonyounglee/duo
 mkdir -p watch_folder
 
+# data 저장되는 cache 경로 설정.
+
+# batch size 설정.
+
 # bispl2 gpu2,3 에서 실행. per 128
 CUDA_VISIBLE_DEVICES=2,3 nohup bash "myscripts/train_lm1b_mdlm_sentencepacking.sh" \
   > watch_folder/mdlm_lm1b_wrap_b200x4.log 2>&1 &
